@@ -1,0 +1,14 @@
+spring.application.name=OpenHand
+spring:
+datasource:
+url: jdbc:postgresql://localhost:5432/openhanddb
+username: your_username
+password: your_password
+jpa:
+hibernate:
+ddl-auto: update
+properties:
+hibernate:
+dialect: org.hibernate.dialect.PostgreSQLDialect
+server:
+port: 8080
