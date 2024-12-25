@@ -1,18 +1,17 @@
 package com.openhand.openhand.services;
 
 import com.openhand.openhand.Dto.User.Request.UpdateUserDTO;
-import com.openhand.openhand.Dto.User.Request.UserRequestDTO;
+import com.openhand.openhand.Dto.User.Request.UserCreateRequestDTO;
 import com.openhand.openhand.Dto.User.Request.UpdateUserPasswordDTO;
 import com.openhand.openhand.Dto.User.Response.UserResponseDTO;
 import com.openhand.openhand.entities.User;
+import com.openhand.openhand.enums.Role;
 import com.openhand.openhand.exceptions.ResourceNotFoundException;
 import com.openhand.openhand.repositories.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @Service
 public class UserService {
@@ -22,8 +21,8 @@ public class UserService {
     @Autowired
     private JwtTokenService jwtService;
     // Kullanıcı Kaydı
-    public UserResponseDTO registerUser(UserRequestDTO requestDTO) {
-        if (userRepository.findByEmail(requestDTO.getEmail()) != null) {
+    public UserResponseDTO registerUser(UserCreateRequestDTO requestDTO) {
+        if (userRepository.findByEmail(requestDTO.getEmail()).isPresent()) {
             throw new IllegalArgumentException("Bu e-posta adresi zaten kullanılıyor!");
         }
         if (userRepository.findByPhone(requestDTO.getPhone()) != null) {
@@ -42,24 +41,45 @@ public class UserService {
     }
     // Kullanıcı Giriş
     public Map<String, String> login(String email, String password) {
-        User user = userRepository.findByEmail(email);
-        if (user != null && user.getPassword().equals(password)) {
-            String accessToken = jwtService.generateAccessToken(user.getEmail());
-            String refreshToken = jwtService.generateRefreshToken(user.getEmail());
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new IllegalArgumentException("Kullanıcı adı veya şifre hatalı!")); // Kullanıcı kontrolü
 
-            Map<String, String> tokens = new HashMap<>();
-            tokens.put("accessToken", accessToken);
-            tokens.put("refreshToken", refreshToken);
-            return tokens;
+        // Kullanıcının aktif olup olmadığını kontrol et
+        if (!user.isActive()) {
+            throw new IllegalStateException("Bu kullanıcı şu anda askıya alınmış durumda.");
         }
-        throw new IllegalArgumentException("Kullanıcı adı veya şifre hatalı!");
+
+        // Şifre doğrulama
+        if (!user.getPassword().equals(password)) {
+            throw new IllegalArgumentException("Kullanıcı adı veya şifre hatalı!");
+        }
+
+        // Token oluşturma
+        String accessToken = jwtService.generateAccessToken(user); // User nesnesi gönderiliyor
+        String refreshToken = jwtService.generateRefreshToken(user);
+
+        Map<String, String> tokens = new HashMap<>();
+        tokens.put("accessToken", accessToken);
+        tokens.put("refreshToken", refreshToken);
+
+        return tokens;
     }
+
     public String refreshAccessToken(String refreshToken) {
-        if (jwtService.validateRefreshToken(refreshToken)) {
-            String email = jwtService.getEmailFromToken(refreshToken);
-            return jwtService.generateAccessToken(email);
+        // Token doğrulama
+        if (!jwtService.validateRefreshToken(refreshToken)) {
+            throw new IllegalArgumentException("Geçersiz Refresh Token!");
         }
-        throw new IllegalArgumentException("Geçersiz Refresh Token!");
+
+        // Token'dan email çekiliyor
+        String email = jwtService.getEmailFromToken(refreshToken);
+
+        // Kullanıcı doğrulama
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new IllegalArgumentException("Kullanıcı bulunamadı!"));
+
+        // Yeni Access Token oluşturma
+        return jwtService.generateAccessToken(user); // User nesnesi gönderiliyor
     }
 
     // Tüm Kullanıcıları Listele
@@ -77,10 +97,9 @@ public class UserService {
     public UserResponseDTO updateUser(Long id, UpdateUserDTO updateDTO) {
         User user = userRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Kullanıcı bulunamadı!"));
-
         // Email kontrolü: Eğer güncellenen email farklı ise kontrol et
         if (!user.getEmail().equals(updateDTO.getEmail())) {
-            if (userRepository.findByEmail(updateDTO.getEmail()) != null) {
+            if (userRepository.findByEmail(updateDTO.getEmail()).isPresent()) {
                 throw new IllegalArgumentException("Bu e-posta adresi zaten kullanılıyor!");
             }
             user.setEmail(updateDTO.getEmail());
@@ -102,13 +121,24 @@ public class UserService {
         return mapToResponseDTO(user);
     }
 
-    // Kullanıcı Sil
+    // Adminin Kullanıcı Sil metodu
     public void deleteUser(Long id) {
         if (!userRepository.existsById(id)) {
             throw new ResourceNotFoundException("Kullanıcı bulunamadı!");
         }
         userRepository.deleteById(id);
     }
+
+    // Kendi hesabını silme
+    public void deleteUserByEmail(String email) {
+        // Kullanıcıyı email üzerinden al
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new ResourceNotFoundException("Kullanıcı bulunamadı."));
+
+        // Kullanıcıyı sil
+        userRepository.delete(user);
+    }
+
 
     // Şifre güncelleme için
     public void updatePassword(Long userId, UpdateUserPasswordDTO passwordDTO) {
@@ -128,6 +158,48 @@ public class UserService {
         user.setPassword(passwordDTO.getNewPassword());
         userRepository.save(user);
     }
+
+    // Kullanıcı engelleme
+    public void blockUser(Long userId, Long blockedUserId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Kullanıcı bulunamadı!"));
+        User blockedUser = userRepository.findById(blockedUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Engellenecek kullanıcı bulunamadı!"));
+
+        user.getBlockedUsers().add(blockedUser);
+        userRepository.save(user);
+    }
+
+    // Engellenen kullanıcı kontrolü
+    private void checkBlockedUsers(User user, User targetUser) {
+        if (user.getBlockedUsers().contains(targetUser)) {
+            throw new IllegalArgumentException("Bu kullanıcı engellenmiş!");
+        }
+    }
+
+    // Kullanıcı engelini kaldırma
+    public void unblockUser(Long userId, Long blockedUserId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Kullanıcı bulunamadı!"));
+        User blockedUser = userRepository.findById(blockedUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Engel kaldırılacak kullanıcı bulunamadı!"));
+
+        if (!user.getBlockedUsers().contains(blockedUser)) {
+            throw new IllegalArgumentException("Bu kullanıcı engellenmemiş!");
+        }
+
+        user.getBlockedUsers().remove(blockedUser);
+        userRepository.save(user);
+    }
+
+
+    // Engellenen kullanıcıları  listeleme
+    public List<User> getBlockedUsers(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Kullanıcı bulunamadı!"));
+        return user.getBlockedUsers();
+    }
+
 
     private UserResponseDTO mapToResponseDTO(User user) {
         UserResponseDTO dto = new UserResponseDTO();

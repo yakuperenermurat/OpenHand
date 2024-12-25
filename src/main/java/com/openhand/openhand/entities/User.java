@@ -1,10 +1,12 @@
 package com.openhand.openhand.entities;
 
+import com.openhand.openhand.enums.Role;
 import jakarta.persistence.*;
         import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 @Entity
@@ -28,6 +30,20 @@ public class User {
     @Column(unique = true, nullable = false)
     private String phone;
 
+    @ManyToMany
+    @JoinTable(
+            name = "blocked_users",
+            joinColumns = @JoinColumn(name = "user_id"),
+            inverseJoinColumns = @JoinColumn(name = "blocked_user_id")
+    )
+    private List<User> blockedUsers = new ArrayList<>(); // Engellenen kullanıcılar
+
+    @Column(name = "suspended_until")
+    private LocalDateTime suspendedUntil; // Hesap askıya alınma bitiş tarihi (null ise süresiz)
+
+    @Enumerated(EnumType.STRING)
+    private Role role = Role.USER; // Varsayılan olarak USER atanır
+
     private String location; // Mahalle/Semt bilgisi için
 
     private Double rating = 0.0; // Başlangıç değeri 0.0 olarak belirlenir. // Kullanıcı puanı
@@ -50,5 +66,10 @@ public class User {
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = LocalDateTime.now();
+    }
+
+    // Kullanıcının aktif olup olmadığını kontrol eden metot
+    public boolean isActive() {
+        return suspendedUntil == null || suspendedUntil.isBefore(LocalDateTime.now());
     }
 }
